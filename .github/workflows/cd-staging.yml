@@ -1,0 +1,87 @@
+name: "CD — Staging"
+
+on:
+  push:
+    branches: ['staging']
+  workflow_dispatch:
+
+concurrency:
+  group: cd-staging
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: CI suite
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+      - name: Build
+        run: npm run build
+        env:
+          NODE_ENV: production
+          NEXT_PUBLIC_ENVIRONMENT: staging
+          NEXT_PUBLIC_APP_URL: ${{ secrets.APP_URL_STAGING }}
+          NEXT_PUBLIC_APP_VERSION: ${{ github.sha }}
+      - name: Package build
+        run: tar --ignore-failed-read -czf build-staging.tar.gz .next/ public/ package.json package-lock.json next.config.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-staging-${{ github.sha }}
+          path: build-staging.tar.gz
+          retention-days: 7
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-staging-${{ github.sha }}
+      - run: tar -xzf build-staging.tar.gz
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p ${{ secrets.HOSTINGER_PORT }} -H ${{ secrets.HOSTINGER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Deploy via rsync
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -p ${{ secrets.HOSTINGER_PORT }} -o StrictHostKeyChecking=no" \
+            .next/ public/ package.json package-lock.json next.config.mjs \
+            ${{ secrets.HOSTINGER_USERNAME }}@${{ secrets.HOSTINGER_HOST }}:${{ secrets.HOSTINGER_DEPLOY_PATH_STAGING }}/
+      - name: Install & restart
+        run: |
+          ssh -i ~/.ssh/deploy_key -p ${{ secrets.HOSTINGER_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.HOSTINGER_USERNAME }}@${{ secrets.HOSTINGER_HOST }} \
+            "cd ${{ secrets.HOSTINGER_DEPLOY_PATH_STAGING }} && npm install --production && pm2 restart tv-sales-staging || pm2 start npm --name tv-sales-staging -- start"
+      - name: Health check
+        run: |
+          sleep 10
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.APP_URL_STAGING }}/api/health)
+          if [ "$STATUS" != "200" ]; then echo "Staging health check failed - HTTP $STATUS" && exit 1; fi
+          echo "Staging health check passed"
+      - name: Summary
+        run: |
+          echo "## Staging Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "URL: ${{ secrets.APP_URL_STAGING }}" >> $GITHUB_STEP_SUMMARY

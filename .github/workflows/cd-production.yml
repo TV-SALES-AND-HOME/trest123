@@ -1,0 +1,131 @@
+# =============================================================================
+# CD - Production Deployment
+# TV Sales & Furniture | demo_repository
+#
+# NOTE: GitHub Free Plan - private repos do not support environment secrets
+# or environment protection rules. Manual review gate is enforced via the
+# PR -> main workflow. See docs/deployment.md
+# =============================================================================
+
+name: "CD — Production"
+
+on:
+  push:
+    branches: ['main']
+  workflow_dispatch:
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ci:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  security:
+    name: Security Gate
+    runs-on: ubuntu-latest
+    needs: ci
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+  build:
+    name: Production Build
+    runs-on: ubuntu-latest
+    needs: [ci, security]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Build
+        run: npm run build
+        env:
+          NODE_ENV: production
+          NEXT_PUBLIC_ENVIRONMENT: production
+          NEXT_PUBLIC_APP_URL: ${{ secrets.APP_URL_PROD }}
+          NEXT_PUBLIC_APP_VERSION: ${{ github.sha }}
+      - name: Package build
+        run: tar --ignore-failed-read -czf build-prod.tar.gz .next/ public/ package.json package-lock.json next.config.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-prod-${{ github.sha }}
+          path: build-prod.tar.gz
+          retention-days: 30
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-prod-${{ github.sha }}
+      - run: tar -xzf build-prod.tar.gz
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p ${{ secrets.HOSTINGER_PORT }} -H ${{ secrets.HOSTINGER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Deploy via rsync
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -p ${{ secrets.HOSTINGER_PORT }} -o StrictHostKeyChecking=no" \
+            .next/ public/ package.json package-lock.json next.config.mjs \
+            ${{ secrets.HOSTINGER_USERNAME }}@${{ secrets.HOSTINGER_HOST }}:${{ secrets.HOSTINGER_DEPLOY_PATH_PROD }}/
+      - name: Install & restart
+        run: |
+          ssh -i ~/.ssh/deploy_key -p ${{ secrets.HOSTINGER_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.HOSTINGER_USERNAME }}@${{ secrets.HOSTINGER_HOST }} \
+            "cd ${{ secrets.HOSTINGER_DEPLOY_PATH_PROD }} && npm install --production && pm2 restart tv-sales-prod || pm2 start npm --name tv-sales-prod -- start"
+      - name: Health check
+        run: |
+          sleep 15
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.APP_URL_PROD }}/api/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "PRODUCTION health check FAILED - HTTP $STATUS"
+            echo "Run rollback: see docs/deployment.md#rollback"
+            exit 1
+          fi
+          echo "Production health check passed - HTTP $STATUS"
+      - name: Summary
+        run: |
+          echo "## PRODUCTION Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| URL | ${{ secrets.APP_URL_PROD }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deployed | $(date -u) |" >> $GITHUB_STEP_SUMMARY
