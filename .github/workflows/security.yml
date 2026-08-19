@@ -1,0 +1,13 @@
+name: Security
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    uses: TV-SALES-AND-HOME/infrastructure/.github/workflows/reusable-security.yml@main

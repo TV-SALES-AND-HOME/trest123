@@ -1,0 +1,22 @@
+name: "CD — Staging"
+
+on:
+  push:
+    branches: ['staging']
+  workflow_dispatch:
+
+concurrency:
+  group: cd-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: TV-SALES-AND-HOME/infrastructure/.github/workflows/reusable-vercel-deploy.yml@main
+    with:
+      environment-name: staging
+      is-production: false
+    secrets:
+      app-url: ${{ secrets.APP_URL_STAGING }}
+      vercel-token: ${{ secrets.VERCEL_TOKEN }}
+      vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+      vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}

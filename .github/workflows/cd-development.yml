@@ -1,0 +1,22 @@
+name: "CD — Development"
+
+on:
+  push:
+    branches: ['develop']
+  workflow_dispatch:
+
+concurrency:
+  group: cd-development
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: TV-SALES-AND-HOME/infrastructure/.github/workflows/reusable-vercel-deploy.yml@main
+    with:
+      environment-name: development
+      is-production: false
+    secrets:
+      app-url: ${{ secrets.APP_URL_DEV }}
+      vercel-token: ${{ secrets.VERCEL_TOKEN }}
+      vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+      vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}

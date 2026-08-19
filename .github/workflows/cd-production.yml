@@ -1,0 +1,33 @@
+# =============================================================================
+# CD - Production Deployment
+# TV Sales & Home | template
+#
+# NOTE: GitHub Free Plan - private repos do not support environment secrets
+# or environment protection rules. Manual review gate is enforced via the
+# PR -> main workflow. See docs/deployment.md
+# =============================================================================
+
+name: "CD — Production"
+
+on:
+  push:
+    branches: ['main']
+  workflow_dispatch:
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: TV-SALES-AND-HOME/infrastructure/.github/workflows/reusable-vercel-deploy.yml@main
+    with:
+      environment-name: production
+      is-production: true
+      run-ci-gate: true
+      run-security-gate: true
+    secrets:
+      app-url: ${{ secrets.APP_URL_PROD }}
+      vercel-token: ${{ secrets.VERCEL_TOKEN }}
+      vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+      vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
